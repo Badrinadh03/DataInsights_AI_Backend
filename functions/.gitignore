@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+
+# Env files (never push secrets)
+.env
+*.env
+
+# Firebase
+.firebase/
+.runtimeconfig.json
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
