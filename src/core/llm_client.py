@@ -7,7 +7,7 @@ try:
 except Exception:
     pass
 
-def set_provider(provider: str, mistral_key: str = "", openai_key: str = "", model: Optional[str] = None) -> None:
+def set_provider(provider: str, mistral_key: str = "", openai_key: str = "", gemini_key: str = "", model: Optional[str] = None) -> None:
     p = (provider or "None").strip()
     os.environ["LLM_PROVIDER"] = p
     if p.lower() == "mistral" and mistral_key:
@@ -18,9 +18,14 @@ def set_provider(provider: str, mistral_key: str = "", openai_key: str = "", mod
         os.environ["OPENAI_API_KEY"] = openai_key
         if model:
             os.environ["OPENAI_MODEL"] = model
+    elif p.lower() in {"gemini", "google"} and gemini_key:
+        os.environ["GEMINI_API_KEY"] = gemini_key
+        if model:
+            os.environ["GEMINI_MODEL"] = model
+
 
 def current_settings() -> dict:
-    provider = (os.getenv("LLM_PROVIDER", "OpenAI")).strip()
+    provider = (os.getenv("LLM_PROVIDER", "gemini")).strip()
     if provider.lower() == "mistral":
         return {
             "provider": "Mistral",
@@ -35,7 +40,15 @@ def current_settings() -> dict:
             "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
             "base_url": os.getenv("OPENAI_BASE_URL", "").strip() or None,
         }
+    elif provider.lower() in {"gemini", "google"}:
+        return {
+            "provider": "Gemini",
+            "api_key": os.getenv("GEMINI_API_KEY", ""),
+            "model": os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
+            "base_url": None,
+        }
     return {"provider": "None", "api_key": "", "model": "", "base_url": None}
+
 
 def chat_complete(messages: List[Dict[str, str]],
                   provider: Optional[str] = None,
@@ -46,8 +59,8 @@ def chat_complete(messages: List[Dict[str, str]],
                   **kwargs) -> str:
     cfg = current_settings()
     provider = provider or cfg["provider"]
-    api_key  = api_key or cfg["api_key"]
-    model    = model or cfg["model"]
+    api_key = api_key or cfg["api_key"]
+    model = model or cfg["model"]
     base_url = base_url or cfg.get("base_url")
 
     if (provider or "").lower() == "openai":
@@ -78,5 +91,19 @@ def chat_complete(messages: List[Dict[str, str]],
                 return resp.choices[0].message["content"]
             except Exception as e2:
                 raise RuntimeError(f"Mistral chat error: {e2}")
+    elif (provider or "").lower() in {"gemini", "google"}:
+        try:
+            from google import genai
+            if not api_key:
+                raise ValueError("GEMINI_API_KEY is missing")
+            client = genai.Client(api_key=api_key)
+            prompt = "\n\n".join(f"{m.get('role', 'user')}: {m.get('content', '')}" for m in messages)
+            resp = client.models.generate_content(
+                model=model or "gemini-2.0-flash",
+                contents=prompt,
+            )
+            return getattr(resp, "text", "") or ""
+        except Exception as e:
+            raise RuntimeError(f"Gemini chat error: {e}")
     else:
         raise RuntimeError("No provider configured. Set LLM_PROVIDER or call set_provider().")

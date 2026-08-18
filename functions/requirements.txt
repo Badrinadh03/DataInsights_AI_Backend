@@ -6,3 +6,4 @@ openai
 mistralai
 httpx
 python-dotenv
+google-genai

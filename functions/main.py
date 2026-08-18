@@ -25,14 +25,24 @@ from src.core.insight_summary import summarize_dataframe
 from src.core.qa_answers import get_fixed_answer
 # ---- LLM provider from .env ----
 set_provider(
-    os.getenv("LLM_PROVIDER", "OpenAI"),
+    os.getenv("LLM_PROVIDER", "gemini"),
     os.getenv("MISTRAL_API_KEY", ""),
     os.getenv("OPENAI_API_KEY", ""),
-    model=os.getenv("OPENAI_MODEL", "") or os.getenv("MISTRAL_MODEL", "")
+    gemini_key=os.getenv("GEMINI_API_KEY", ""),
+    model=(os.getenv("GEMINI_MODEL", "") or os.getenv("OPENAI_MODEL", "") or os.getenv("MISTRAL_MODEL", "") or "gemini-2.0-flash")
 )
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": os.getenv("CORS_ORIGINS", "*").split(",")}})
+raw_origins = (
+    os.getenv("CORS_ORIGINS")
+    or os.getenv("FRONTEND_URL")
+    or os.getenv("FRONTEND_URLS")
+    or "*"
+)
+origins = [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
+if not origins:
+    origins = ["*"]
+CORS(app, resources={r"/*": {"origins": origins}})
 logging.basicConfig(level=logging.INFO)
 
 # ---- In-memory stores (swap to disk if you want persistence) ----
