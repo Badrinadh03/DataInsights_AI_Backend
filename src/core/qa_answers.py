@@ -35,7 +35,7 @@ def _normalize_text(s: str) -> str:
     s = unicodedata.normalize("NFKC", s)  # normalize quotes etc.
     return re.sub(r"\s+", " ", s).lower()
 
-def get_fixed_answer(question: str):
+def get_fixed_answer(question: str) -> str | None:
     q_norm = _normalize_text(question)
     if q_norm in FIXED_ANSWERS:
         return FIXED_ANSWERS[q_norm]
