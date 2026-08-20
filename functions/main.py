@@ -16,7 +16,7 @@ if BASE_DIR not in sys.path:
 
 # --- Your existing core modules ---
 from src.services.insight_engine import InsightEngine
-from src.core.llm_client import set_provider, current_settings
+from src.core.llm_client import set_provider, current_settings, chat_complete
 from src.core.sanitize import sanitize_identifier
 from src.core.llm_query_response import get_sql_query
 from src.core.run_sql import run_sql_query
@@ -456,7 +456,7 @@ def qa_answer():
 
 
 
-# ---------- OpenAI helper for Auto-Insights ----------
+# ---------- LLM helper for Auto-Insights ----------
 def _extract_column_names_for_llm(data_dict: Dict[str, Any], df: pd.DataFrame) -> List[str]:
     """
     Prefer the sanitized dictionary columns (with 'name'), else fall back to df columns.
@@ -476,16 +476,14 @@ def _extract_column_names_for_llm(data_dict: Dict[str, Any], df: pd.DataFrame) -
         pass
     return [str(c) for c in df.columns]
 
-def _openai_chat_hypotheses(columns: List[str], k: int, cfg: Dict[str, Any]) -> List[str]:
+def _chat_hypotheses(columns: List[str], k: int, cfg: Dict[str, Any]) -> List[str]:
     """
-    Use OpenAI chat completions to emit a JSON array of short, schema-aware questions.
-    - Requires OPENAI_API_KEY to be set via your existing set_provider/current_settings.
-    - Only OpenAI is used (no other providers).
+    Use the configured LLM provider to emit a JSON array of short, schema-aware questions.
     """
-    api_key = cfg.get("api_key") or os.getenv("OPENAI_API_KEY", "")
-    model = (cfg.get("model") or os.getenv("OPENAI_MODEL") or "gpt-4o-mini").strip()
+    api_key = cfg.get("api_key", "")
+    model = (cfg.get("model") or "").strip()
     if not api_key:
-        raise RuntimeError("OPENAI_API_KEY is not configured")
+        raise RuntimeError(f"{cfg.get('provider', 'LLM').upper()} API key is not configured")
 
     system = (
         "You are a sharp data analyst. Given a list of lower_snake_case columns from a single table, "
@@ -500,27 +498,14 @@ def _openai_chat_hypotheses(columns: List[str], k: int, cfg: Dict[str, Any]) -> 
         f"Output JSON array only."
     )
 
-    content = None
-    try:
-        from openai import OpenAI  # >=1.0
-        client = OpenAI(api_key=api_key)
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "system", "content": system},
-                      {"role": "user", "content": user}],
-            temperature=0.9,
-        )
-        content = resp.choices[0].message.content
-    except Exception:
-        import openai  # legacy
-        openai.api_key = api_key
-        resp = openai.ChatCompletion.create(
-            model=model,
-            messages=[{"role": "system", "content": system},
-                      {"role": "user", "content": user}],
-            temperature=0.9,
-        )
-        content = resp["choices"][0]["message"]["content"]
+    content = chat_complete(
+        [{"role": "system", "content": system},
+         {"role": "user", "content": user}],
+        provider=cfg.get("provider"),
+        api_key=api_key,
+        model=model,
+        temperature=0.9,
+    )
 
     text = (content or "").strip()
     if text.startswith("```"):
@@ -543,15 +528,15 @@ def _openai_chat_hypotheses(columns: List[str], k: int, cfg: Dict[str, Any]) -> 
                 out.append(q)
         return out[:k] if out else []
     except Exception as e:
-        raise RuntimeError(f"Failed to parse OpenAI hypotheses JSON: {e}")
+        raise RuntimeError(f"Failed to parse LLM hypotheses JSON: {e}")
 
 
-# ---------------- insights/auto (OpenAI-only, no charts) ----------------
+# ---------------- insights/auto (no charts) ----------------
 @app.post("/v1/insights/auto")
 def auto_insights():
     """
     Generate concise, LLM-guided insights:
-    1) Hypothesis generation (OpenAI only, JSON array of questions)
+    1) Hypothesis generation (configured LLM, JSON array of questions)
     2) SQL generation (reuses get_sql_query)
     3) Execute on sanitized DataFrame
     4) Summarize (few sentences)
@@ -580,14 +565,14 @@ def auto_insights():
 
     cfg = current_settings()
 
-    # 1) Hypotheses (OpenAI only)
+    # 1) Hypotheses
     try:
         colnames = _extract_column_names_for_llm(data_dict, safe_df)
-        questions = _openai_chat_hypotheses(colnames, k, cfg)
+        questions = _chat_hypotheses(colnames, k, cfg)
         if not questions:
             return jsonify({"dataset_id": ds_id, "items": []}), 200
     except Exception as e:
-        return _json_error(f"OpenAI hypothesis generation failed: {e}", 502, "llm_error")
+        return _json_error(f"LLM hypothesis generation failed: {e}", 502, "llm_error")
 
     items = []
     for q in questions:
@@ -632,7 +617,7 @@ def auto_insights():
                 "result_preview": [],
             })
     num_ques = max(k, 5)
-    questions = _openai_chat_hypotheses(colnames, num_ques, cfg)
+    questions = _chat_hypotheses(colnames, num_ques, cfg)
     print(questions)
 
     return jsonify({"dataset_id": ds_id, "items": items, "suggested_questions" : questions}), 200

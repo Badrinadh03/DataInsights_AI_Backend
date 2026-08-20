@@ -2,7 +2,6 @@ flask
 flask-cors
 pandas
 plotly
-openai
 mistralai
 httpx
 python-dotenv
