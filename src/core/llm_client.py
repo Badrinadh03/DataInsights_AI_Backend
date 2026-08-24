@@ -44,11 +44,11 @@ def chat_complete(messages: List[Dict[str, str]],
             client = Anthropic(api_key=api_key, base_url=base_url) if base_url else Anthropic(api_key=api_key)
             system_messages = [m["content"] for m in messages if m.get("role") == "system"]
             chat_messages = [m for m in messages if m.get("role") != "system"]
+            # temperature is deprecated/rejected by current-generation Claude models
             create_kwargs = {
                 "model": model,
                 "max_tokens": kwargs.get("max_tokens", 1024),
                 "messages": chat_messages,
-                "temperature": temperature,
             }
             if system_messages:
                 create_kwargs["system"] = "\n\n".join(system_messages)
