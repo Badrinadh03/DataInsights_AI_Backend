@@ -218,7 +218,14 @@ def _load_schema_sheet(meta: Dict[str, Any], sheet_name: str):
 @app.get("/health")
 def health():
     cfg = current_settings()
-    return jsonify({"status": "ok", "provider": cfg["provider"], "model": cfg["model"]}), 200
+    import anthropic as _anthropic_pkg
+    return jsonify({
+        "status": "ok",
+        "provider": cfg["provider"],
+        "model": cfg["model"],
+        "anthropic_version": getattr(_anthropic_pkg, "__version__", "unknown"),
+        "anthropic_module_file": getattr(_anthropic_pkg, "__file__", "unknown"),
+    }), 200
 
 
 # ---------------- datasets ----------------
