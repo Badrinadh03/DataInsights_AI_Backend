@@ -3,6 +3,7 @@ from typing import Any, Dict, List
 from collections import defaultdict, deque
 from datetime import datetime, timezone
 
+import httpx
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import pandas as pd
@@ -58,6 +59,93 @@ SESSIONS = defaultdict(lambda: defaultdict(dict))
 
 
 # ---------------- utils ----------------
+def _blob_token() -> str:
+    return os.getenv("BLOB_READ_WRITE_TOKEN", "").strip()
+
+def _blob_url(path: str) -> str:
+    return f"https://blob.vercel-storage.com/{path}"
+
+def _blob_put(path: str, content: bytes, content_type: str) -> None:
+    token = _blob_token()
+    if not token:
+        return
+    response = httpx.put(
+        _blob_url(path),
+        content=content,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "x-api-version": "7",
+            "x-content-type": content_type,
+            "x-add-random-suffix": "false",
+        },
+        timeout=30.0,
+    )
+    response.raise_for_status()
+
+def _blob_get(path: str) -> bytes:
+    token = _blob_token()
+    if not token:
+        raise RuntimeError("BLOB_READ_WRITE_TOKEN is not configured")
+    response = httpx.get(
+        _blob_url(path),
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=30.0,
+    )
+    response.raise_for_status()
+    return response.content
+
+def _persist_dataset(ds_id: str, raw: bytes, metadata: Dict[str, Any]) -> None:
+    if not _blob_token():
+        return
+    prefix = f"datasets/{ds_id}"
+    _blob_put(f"{prefix}/source", raw, "application/octet-stream")
+    _blob_put(
+        f"{prefix}/metadata.json",
+        json.dumps(metadata).encode("utf-8"),
+        "application/json",
+    )
+
+def _restore_dataset(ds_id: str):
+    if not _blob_token():
+        return None, None
+    try:
+        metadata = json.loads(_blob_get(f"datasets/{ds_id}/metadata.json"))
+        raw = _blob_get(f"datasets/{ds_id}/source")
+        name = metadata.get("name", "data.csv")
+        if metadata.get("type") == "csv":
+            df = _read_csv(raw, name)
+        else:
+            df = pd.read_excel(io.BytesIO(raw))
+        metadata["bytes"] = raw
+        DATASETS[ds_id] = df
+        META[ds_id] = metadata
+        return df, metadata
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return None, None
+        raise
+
+def _get_dataset(ds_id: str):
+    df = DATASETS.get(ds_id)
+    meta = META.get(ds_id)
+    if df is not None and meta:
+        return df, meta
+    return _restore_dataset(ds_id)
+
+def _read_csv(raw: bytes, name: str) -> pd.DataFrame:
+    try:
+        return pd.read_csv(io.BytesIO(raw))
+    except pd.errors.ParserError:
+        logging.warning("Malformed CSV rows detected in %s; skipping invalid rows", name)
+        rows = list(csv.reader(io.StringIO(raw.decode("utf-8-sig"))))
+        if not rows:
+            raise
+        column_count = len(rows[0])
+        valid_rows = [rows[0]] + [row for row in rows[1:] if len(row) == column_count]
+        cleaned_csv = io.StringIO()
+        csv.writer(cleaned_csv, lineterminator="\n").writerows(valid_rows)
+        return pd.read_csv(io.StringIO(cleaned_csv.getvalue()))
+
 def _json_error(message, code=500, kind="internal", detail=None):
     logging.error("%s | kind=%s | detail=%s", message, kind, detail)
     return jsonify({"error": message, "kind": kind, "detail": detail}), code
@@ -122,19 +210,7 @@ def create_dataset():
 
     try:
         if name.lower().endswith(".csv"):
-            try:
-                df = pd.read_csv(io.BytesIO(raw))
-            except pd.errors.ParserError:
-                # Filter malformed records while preserving quoted delimiters.
-                logging.warning("Malformed CSV rows detected in %s; skipping invalid rows", name)
-                rows = list(csv.reader(io.StringIO(raw.decode("utf-8-sig"))))
-                if not rows:
-                    raise
-                column_count = len(rows[0])
-                valid_rows = [rows[0]] + [row for row in rows[1:] if len(row) == column_count]
-                cleaned_csv = io.StringIO()
-                csv.writer(cleaned_csv, lineterminator="\n").writerows(valid_rows)
-                df = pd.read_csv(io.StringIO(cleaned_csv.getvalue()))
+            df = _read_csv(raw, name)
             ftype = "csv"
         else:
             df = pd.read_excel(io.BytesIO(raw))
@@ -146,11 +222,17 @@ def create_dataset():
     table_name = _safe_table_name(ds_id, name)
     created_at = _now_iso()
 
-    DATASETS[ds_id] = df
-    META[ds_id] = {
+    metadata = {
         "name": name, "bytes": raw, "type": ftype,
         "table_name": table_name, "created_at": created_at
     }
+    try:
+        _persist_dataset(ds_id, raw, {key: value for key, value in metadata.items() if key != "bytes"})
+    except Exception as e:
+        return _json_error(f"failed to persist dataset: {e}", 502, "storage_error")
+
+    DATASETS[ds_id] = df
+    META[ds_id] = metadata
 
     if client_id:
         RECENT_UPLOADS[client_id].appendleft({
@@ -171,7 +253,7 @@ def create_dataset():
 @app.get("/v1/datasets/<ds_id>/preview")
 def preview_dataset(ds_id: str):
     n = int(request.args.get("n", 50))
-    df = DATASETS.get(ds_id)
+    df, _ = _get_dataset(ds_id)
     if df is None:
         return _json_error("dataset not found", 404, "not_found")
     prev = df.head(n).to_dict(orient="records")
@@ -196,8 +278,7 @@ def get_effective_schema(ds_id: str):
     """
     schema_sheet = (request.args.get("schema_sheet") or "").strip()
 
-    df = DATASETS.get(ds_id)
-    meta = META.get(ds_id)
+    df, meta = _get_dataset(ds_id)
     if df is None or not meta:
         return _json_error("dataset not found", 404, "not_found")
 
@@ -306,8 +387,7 @@ def qa_answer():
     if not ds_id or not question:
         return _json_error("dataset_id and question are required", 400, "validation")
 
-    df = DATASETS.get(ds_id)
-    meta = META.get(ds_id)
+    df, meta = _get_dataset(ds_id)
     if df is None or not meta:
         return _json_error("dataset not found", 404, "not_found")
 
@@ -561,8 +641,7 @@ def auto_insights():
     if not ds_id:
         return _json_error("dataset_id is required", 400, "validation")
 
-    df = DATASETS.get(ds_id)
-    meta = META.get(ds_id)
+    df, meta = _get_dataset(ds_id)
     if df is None or not meta:
         return _json_error("dataset not found", 404, "not_found")
 
