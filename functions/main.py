@@ -239,6 +239,13 @@ def health():
     except Exception as e:
         var_task_listing = [f"error: {e}"]
 
+    def _read(path, limit=4000):
+        try:
+            with open(path, "r", errors="replace") as fh:
+                return fh.read(limit)
+        except Exception as e:
+            return f"error: {e}"
+
     return jsonify({
         "status": "ok",
         "provider": cfg["provider"],
@@ -249,6 +256,13 @@ def health():
         "dirs_found": found,
         "var_task_listing": var_task_listing,
         "sys_path": sys.path,
+        "vendored_anthropic_init_source": _read("/var/task/_vendor/anthropic/__init__.py"),
+        "requirements_txt": _read("/var/task/requirements.txt"),
+        "pyproject_toml": _read("/var/task/pyproject.toml"),
+        "uv_lock_anthropic_section": "\n".join(
+            l for l in _read("/var/task/uv.lock", limit=200000).splitlines()
+            if "anthropic" in l.lower()
+        ),
     }), 200
 
 
