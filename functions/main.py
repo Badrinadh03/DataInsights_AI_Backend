@@ -15,6 +15,15 @@ BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
+# Vercel's Python runtime puts /var/task/_vendor ahead of site-packages on sys.path.
+# It bundles its own internal package also named "anthropic" (unrelated to the real
+# Anthropic SDK), which shadows the pip-installed one from requirements.txt. Demote
+# it so our real dependencies win. No-op outside that runtime.
+_vendor_dir = os.path.join(os.sep, "var", "task", "_vendor")
+if _vendor_dir in sys.path:
+    sys.path.remove(_vendor_dir)
+    sys.path.append(_vendor_dir)
+
 # --- Your existing core modules ---
 from src.services.insight_engine import InsightEngine
 from src.core.llm_client import set_provider, current_settings, chat_complete
@@ -210,22 +219,6 @@ def _load_schema_sheet(meta: Dict[str, Any], sheet_name: str):
 def health():
     cfg = current_settings()
     return jsonify({"status": "ok", "provider": cfg["provider"], "model": cfg["model"]}), 200
-
-
-# ---------------- TEMP DIAGNOSTIC: remove after debugging the temperature TypeError ----------------
-@app.get("/debug/anthropic")
-def debug_anthropic():
-    import inspect
-    import anthropic as anthropic_pkg
-    from anthropic import Anthropic
-    c = Anthropic(api_key="sk-diagnostic")
-    return jsonify({
-        "anthropic_version": getattr(anthropic_pkg, "__version__", "unknown"),
-        "anthropic_module_file": getattr(anthropic_pkg, "__file__", "unknown"),
-        "messages_create_signature": str(inspect.signature(c.messages.create)),
-        "messages_create_qualname": getattr(c.messages.create, "__qualname__", "unknown"),
-        "sys_path": sys.path,
-    }), 200
 
 
 # ---------------- datasets ----------------
