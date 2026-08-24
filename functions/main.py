@@ -1,4 +1,4 @@
-import os, sys, uuid, json, io, logging
+import os, sys, uuid, json, io, logging, csv
 from typing import Any, Dict, List
 from collections import defaultdict, deque
 from datetime import datetime, timezone
@@ -122,7 +122,19 @@ def create_dataset():
 
     try:
         if name.lower().endswith(".csv"):
-            df = pd.read_csv(io.BytesIO(raw))
+            try:
+                df = pd.read_csv(io.BytesIO(raw))
+            except pd.errors.ParserError:
+                # Filter malformed records while preserving quoted delimiters.
+                logging.warning("Malformed CSV rows detected in %s; skipping invalid rows", name)
+                rows = list(csv.reader(io.StringIO(raw.decode("utf-8-sig"))))
+                if not rows:
+                    raise
+                column_count = len(rows[0])
+                valid_rows = [rows[0]] + [row for row in rows[1:] if len(row) == column_count]
+                cleaned_csv = io.StringIO()
+                csv.writer(cleaned_csv, lineterminator="\n").writerows(valid_rows)
+                df = pd.read_csv(io.StringIO(cleaned_csv.getvalue()))
             ftype = "csv"
         else:
             df = pd.read_excel(io.BytesIO(raw))
