@@ -224,6 +224,7 @@ def debug_anthropic():
         "anthropic_module_file": getattr(anthropic_pkg, "__file__", "unknown"),
         "messages_create_signature": str(inspect.signature(c.messages.create)),
         "messages_create_qualname": getattr(c.messages.create, "__qualname__", "unknown"),
+        "sys_path": sys.path,
     }), 200
 
 
