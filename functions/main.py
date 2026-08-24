@@ -80,15 +80,32 @@ def _blob_put(path: str, content: bytes, content_type: str) -> None:
     )
     response.raise_for_status()
 
+class _BlobNotFound(Exception):
+    pass
+
 def _blob_get(path: str) -> bytes:
     token = _blob_token()
     if not token:
         raise RuntimeError("BLOB_READ_WRITE_TOKEN is not configured")
-    response = httpx.get(
-        _blob_url(path),
-        headers={"Authorization": f"Bearer {token}"},
+    # Uploaded blobs are served from a store-specific
+    # https://<store-id>.public.blob.vercel-storage.com/<pathname> URL, not from
+    # blob.vercel-storage.com (that host is only the write/list API). Look up the
+    # real URL via the List API, then fetch the content from there.
+    list_response = httpx.get(
+        "https://blob.vercel-storage.com",
+        params={"prefix": path},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "x-api-version": "7",
+        },
         timeout=30.0,
     )
+    list_response.raise_for_status()
+    blobs = list_response.json().get("blobs", [])
+    match = next((b for b in blobs if b.get("pathname") == path), None)
+    if match is None:
+        raise _BlobNotFound(path)
+    response = httpx.get(match["url"], timeout=30.0)
     response.raise_for_status()
     return response.content
 
@@ -118,10 +135,8 @@ def _restore_dataset(ds_id: str):
         DATASETS[ds_id] = df
         META[ds_id] = metadata
         return df, metadata
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 404:
-            return None, None
-        raise
+    except _BlobNotFound:
+        return None, None
 
 def _get_dataset(ds_id: str):
     df = DATASETS.get(ds_id)
