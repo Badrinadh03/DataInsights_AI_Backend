@@ -3,6 +3,6 @@ flask-cors
 pandas
 openpyxl
 plotly
-anthropic
+anthropic>=0.34.0
 httpx
 python-dotenv

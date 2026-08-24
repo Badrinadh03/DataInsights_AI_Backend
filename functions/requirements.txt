@@ -5,4 +5,4 @@ openpyxl
 plotly
 httpx
 python-dotenv
-anthropic
+anthropic>=0.34.0
