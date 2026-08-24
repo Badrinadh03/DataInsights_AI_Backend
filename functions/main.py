@@ -230,8 +230,14 @@ def health():
             if depth >= 6:
                 dirnames[:] = []
                 continue
-            if "anthropic" in dirnames:
-                found.append(os.path.join(dirpath, "anthropic"))
+            if "anthropic" in dirnames or "flask" in dirnames:
+                found.append(dirpath)
+
+    import flask as _flask_pkg
+    try:
+        var_task_listing = sorted(os.listdir("/var/task"))
+    except Exception as e:
+        var_task_listing = [f"error: {e}"]
 
     return jsonify({
         "status": "ok",
@@ -239,7 +245,9 @@ def health():
         "model": cfg["model"],
         "anthropic_version": getattr(_anthropic_pkg, "__version__", "unknown"),
         "anthropic_module_file": getattr(_anthropic_pkg, "__file__", "unknown"),
-        "anthropic_dirs_found": found,
+        "flask_module_file": getattr(_flask_pkg, "__file__", "unknown"),
+        "dirs_found": found,
+        "var_task_listing": var_task_listing,
         "sys_path": sys.path,
     }), 200
 
