@@ -15,15 +15,6 @@ BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
-# Vercel's Python runtime puts /var/task/_vendor ahead of site-packages on sys.path.
-# It bundles its own internal package also named "anthropic" (unrelated to the real
-# Anthropic SDK), which shadows the pip-installed one from requirements.txt. Demote
-# it so our real dependencies win. No-op outside that runtime.
-_vendor_dir = os.path.join(os.sep, "var", "task", "_vendor")
-if _vendor_dir in sys.path:
-    sys.path.remove(_vendor_dir)
-    sys.path.append(_vendor_dir)
-
 # --- Your existing core modules ---
 from src.services.insight_engine import InsightEngine
 from src.core.llm_client import set_provider, current_settings, chat_complete
@@ -218,52 +209,7 @@ def _load_schema_sheet(meta: Dict[str, Any], sheet_name: str):
 @app.get("/health")
 def health():
     cfg = current_settings()
-    from src.core.llm_client import _real_anthropic_module
-    _anthropic_pkg = _real_anthropic_module()
-
-    found = []
-    for root in ("/var/task", "/var/lang"):
-        if not os.path.isdir(root):
-            continue
-        for dirpath, dirnames, _filenames in os.walk(root):
-            depth = dirpath[len(root):].count(os.sep)
-            if depth >= 6:
-                dirnames[:] = []
-                continue
-            if "anthropic" in dirnames or "flask" in dirnames:
-                found.append(dirpath)
-
-    import flask as _flask_pkg
-    try:
-        var_task_listing = sorted(os.listdir("/var/task"))
-    except Exception as e:
-        var_task_listing = [f"error: {e}"]
-
-    def _read(path, limit=4000):
-        try:
-            with open(path, "r", errors="replace") as fh:
-                return fh.read(limit)
-        except Exception as e:
-            return f"error: {e}"
-
-    return jsonify({
-        "status": "ok",
-        "provider": cfg["provider"],
-        "model": cfg["model"],
-        "anthropic_version": getattr(_anthropic_pkg, "__version__", "unknown"),
-        "anthropic_module_file": getattr(_anthropic_pkg, "__file__", "unknown"),
-        "flask_module_file": getattr(_flask_pkg, "__file__", "unknown"),
-        "dirs_found": found,
-        "var_task_listing": var_task_listing,
-        "sys_path": sys.path,
-        "vendored_anthropic_init_source": _read("/var/task/_vendor/anthropic/__init__.py"),
-        "requirements_txt": _read("/var/task/requirements.txt"),
-        "pyproject_toml": _read("/var/task/pyproject.toml"),
-        "uv_lock_anthropic_section": "\n".join(
-            l for l in _read("/var/task/uv.lock", limit=200000).splitlines()
-            if "anthropic" in l.lower()
-        ),
-    }), 200
+    return jsonify({"status": "ok", "provider": cfg["provider"], "model": cfg["model"]}), 200
 
 
 # ---------------- datasets ----------------
