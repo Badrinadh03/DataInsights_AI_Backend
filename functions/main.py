@@ -220,12 +220,27 @@ def health():
     cfg = current_settings()
     from src.core.llm_client import _real_anthropic_module
     _anthropic_pkg = _real_anthropic_module()
+
+    found = []
+    for root in ("/var/task", "/var/lang"):
+        if not os.path.isdir(root):
+            continue
+        for dirpath, dirnames, _filenames in os.walk(root):
+            depth = dirpath[len(root):].count(os.sep)
+            if depth >= 6:
+                dirnames[:] = []
+                continue
+            if "anthropic" in dirnames:
+                found.append(os.path.join(dirpath, "anthropic"))
+
     return jsonify({
         "status": "ok",
         "provider": cfg["provider"],
         "model": cfg["model"],
         "anthropic_version": getattr(_anthropic_pkg, "__version__", "unknown"),
         "anthropic_module_file": getattr(_anthropic_pkg, "__file__", "unknown"),
+        "anthropic_dirs_found": found,
+        "sys_path": sys.path,
     }), 200
 
 
