@@ -26,11 +26,9 @@ from src.core.insight_summary import summarize_dataframe
 from src.core.qa_answers import get_fixed_answer
 # ---- LLM provider from .env ----
 set_provider(
-    os.getenv("LLM_PROVIDER", "gemini"),
-    os.getenv("MISTRAL_API_KEY", ""),
+    "claude",
     os.getenv("ANTHROPIC_API_KEY", ""),
-    gemini_key=os.getenv("GEMINI_API_KEY", ""),
-    model=(os.getenv("GEMINI_MODEL", "") or os.getenv("ANTHROPIC_MODEL", "") or os.getenv("MISTRAL_MODEL", "") or "gemini-2.0-flash")
+    model=os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-latest"),
 )
 
 app = Flask(__name__)

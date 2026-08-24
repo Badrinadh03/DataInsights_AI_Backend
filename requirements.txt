@@ -3,7 +3,5 @@ flask-cors
 pandas
 plotly
 anthropic
-mistralai
 httpx
 python-dotenv
-google-genai
