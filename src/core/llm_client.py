@@ -20,7 +20,7 @@ def current_settings() -> dict:
     return {
         "provider": "Claude",
         "api_key": os.getenv("ANTHROPIC_API_KEY", ""),
-        "model": os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-latest"),
+        "model": os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5"),
         "base_url": os.getenv("ANTHROPIC_BASE_URL", "").strip() or None,
     }
 

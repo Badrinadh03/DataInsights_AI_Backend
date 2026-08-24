@@ -28,7 +28,7 @@ from src.core.qa_answers import get_fixed_answer
 set_provider(
     "claude",
     os.getenv("ANTHROPIC_API_KEY", ""),
-    model=os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-latest"),
+    model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5"),
 )
 
 app = Flask(__name__)
