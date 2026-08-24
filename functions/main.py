@@ -135,8 +135,10 @@ def _restore_dataset(ds_id: str):
         DATASETS[ds_id] = df
         META[ds_id] = metadata
         return df, metadata
-    except _BlobNotFound:
-        return None, None
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return None, None
+        raise
 
 def _get_dataset(ds_id: str):
     df = DATASETS.get(ds_id)
