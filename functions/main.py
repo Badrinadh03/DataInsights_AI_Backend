@@ -27,9 +27,9 @@ from src.core.qa_answers import get_fixed_answer
 set_provider(
     os.getenv("LLM_PROVIDER", "gemini"),
     os.getenv("MISTRAL_API_KEY", ""),
-    os.getenv("OPENAI_API_KEY", ""),
+    os.getenv("ANTHROPIC_API_KEY", ""),
     gemini_key=os.getenv("GEMINI_API_KEY", ""),
-    model=(os.getenv("GEMINI_MODEL", "") or os.getenv("OPENAI_MODEL", "") or os.getenv("MISTRAL_MODEL", "") or "gemini-2.0-flash")
+    model=(os.getenv("GEMINI_MODEL", "") or os.getenv("ANTHROPIC_MODEL", "") or os.getenv("MISTRAL_MODEL", "") or "gemini-2.0-flash")
 )
 
 app = Flask(__name__)

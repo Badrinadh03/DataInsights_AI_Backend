@@ -6,3 +6,4 @@ mistralai
 httpx
 python-dotenv
 google-genai
+anthropic

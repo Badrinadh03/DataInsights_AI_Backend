@@ -7,17 +7,17 @@ try:
 except Exception:
     pass
 
-def set_provider(provider: str, mistral_key: str = "", openai_key: str = "", gemini_key: str = "", model: Optional[str] = None) -> None:
+def set_provider(provider: str, mistral_key: str = "", claude_key: str = "", gemini_key: str = "", model: Optional[str] = None) -> None:
     p = (provider or "None").strip()
     os.environ["LLM_PROVIDER"] = p
     if p.lower() == "mistral" and mistral_key:
         os.environ["MISTRAL_API_KEY"] = mistral_key
         if model:
             os.environ["MISTRAL_MODEL"] = model
-    elif p.lower() == "openai" and openai_key:
-        os.environ["OPENAI_API_KEY"] = openai_key
+    elif p.lower() in {"claude", "anthropic"} and claude_key:
+        os.environ["ANTHROPIC_API_KEY"] = claude_key
         if model:
-            os.environ["OPENAI_MODEL"] = model
+            os.environ["ANTHROPIC_MODEL"] = model
     elif p.lower() in {"gemini", "google"} and gemini_key:
         os.environ["GEMINI_API_KEY"] = gemini_key
         if model:
@@ -33,12 +33,12 @@ def current_settings() -> dict:
             "model": os.getenv("MISTRAL_MODEL", "mistral-large-latest"),
             "base_url": os.getenv("MISTRAL_BASE_URL", "").strip() or None,
         }
-    elif provider.lower() == "openai":
+    elif provider.lower() in {"claude", "anthropic"}:
         return {
-            "provider": "OpenAI",
-            "api_key": os.getenv("OPENAI_API_KEY", ""),
-            "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-            "base_url": os.getenv("OPENAI_BASE_URL", "").strip() or None,
+            "provider": "Claude",
+            "api_key": os.getenv("ANTHROPIC_API_KEY", ""),
+            "model": os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-latest"),
+            "base_url": os.getenv("ANTHROPIC_BASE_URL", "").strip() or None,
         }
     elif provider.lower() in {"gemini", "google"}:
         return {
@@ -63,18 +63,22 @@ def chat_complete(messages: List[Dict[str, str]],
     model = model or cfg["model"]
     base_url = base_url or cfg.get("base_url")
 
-    if (provider or "").lower() == "openai":
+    if (provider or "").lower() in {"claude", "anthropic"}:
         try:
-            from openai import OpenAI
-            client = OpenAI(api_key=api_key, base_url=base_url) if base_url else OpenAI(api_key=api_key)
-            resp = client.chat.completions.create(
+            from anthropic import Anthropic
+            client = Anthropic(api_key=api_key, base_url=base_url) if base_url else Anthropic(api_key=api_key)
+            system_messages = [m["content"] for m in messages if m.get("role") == "system"]
+            chat_messages = [m for m in messages if m.get("role") != "system"]
+            resp = client.messages.create(
                 model=model,
-                messages=messages,
+                max_tokens=kwargs.get("max_tokens", 1024),
+                messages=chat_messages,
                 temperature=temperature,
+                system="\n\n".join(system_messages) if system_messages else None,
             )
-            return resp.choices[0].message.content or ""
+            return "".join(block.text for block in resp.content if getattr(block, "type", "") == "text")
         except Exception as e:
-            raise RuntimeError(f"OpenAI chat error: {e}")
+            raise RuntimeError(f"Claude chat error: {e}")
     elif (provider or "").lower() == "mistral":
         try:
             from mistralai.client import MistralClient
