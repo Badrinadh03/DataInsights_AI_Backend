@@ -212,6 +212,21 @@ def health():
     return jsonify({"status": "ok", "provider": cfg["provider"], "model": cfg["model"]}), 200
 
 
+# ---------------- TEMP DIAGNOSTIC: remove after debugging the temperature TypeError ----------------
+@app.get("/debug/anthropic")
+def debug_anthropic():
+    import inspect
+    import anthropic as anthropic_pkg
+    from anthropic import Anthropic
+    c = Anthropic(api_key="sk-diagnostic")
+    return jsonify({
+        "anthropic_version": getattr(anthropic_pkg, "__version__", "unknown"),
+        "anthropic_module_file": getattr(anthropic_pkg, "__file__", "unknown"),
+        "messages_create_signature": str(inspect.signature(c.messages.create)),
+        "messages_create_qualname": getattr(c.messages.create, "__qualname__", "unknown"),
+    }), 200
+
+
 # ---------------- datasets ----------------
 @app.post("/v1/datasets")
 def create_dataset():
