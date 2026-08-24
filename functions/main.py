@@ -218,7 +218,8 @@ def _load_schema_sheet(meta: Dict[str, Any], sheet_name: str):
 @app.get("/health")
 def health():
     cfg = current_settings()
-    import anthropic as _anthropic_pkg
+    from src.core.llm_client import _real_anthropic_module
+    _anthropic_pkg = _real_anthropic_module()
     return jsonify({
         "status": "ok",
         "provider": cfg["provider"],
