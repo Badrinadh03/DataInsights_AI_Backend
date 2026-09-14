@@ -1,7 +1,8 @@
-import os, sys, uuid, json, io, logging, csv
+import os, sys, uuid, json, io, logging, csv, time, secrets, hmac, hashlib, base64
 from typing import Any, Dict, List
 from collections import defaultdict, deque
 from datetime import datetime, timezone
+from urllib.parse import urlencode
 
 import httpx
 from flask import Flask, request, jsonify
@@ -135,10 +136,8 @@ def _restore_dataset(ds_id: str):
         DATASETS[ds_id] = df
         META[ds_id] = metadata
         return df, metadata
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 404:
-            return None, None
-        raise
+    except _BlobNotFound:
+        return None, None
 
 def _get_dataset(ds_id: str):
     df = DATASETS.get(ds_id)
@@ -213,6 +212,34 @@ def health():
 
 
 # ---------------- datasets ----------------
+def _ingest_dataframe(raw: bytes, name: str):
+    if name.lower().endswith(".csv"):
+        return _read_csv(raw, name), "csv"
+    return pd.read_excel(io.BytesIO(raw)), "excel"
+
+def _register_dataset(ds_id: str, name: str, df: pd.DataFrame, ftype: str,
+                       raw: bytes, client_id: str, created_at: str = None) -> Dict[str, Any]:
+    table_name = _safe_table_name(ds_id, name)
+    created_at = created_at or _now_iso()
+    DATASETS[ds_id] = df
+    META[ds_id] = {"name": name, "bytes": raw, "type": ftype, "table_name": table_name, "created_at": created_at}
+
+    if client_id:
+        RECENT_UPLOADS[client_id].appendleft({
+            "dataset_id": ds_id, "name": name, "rows": int(df.shape[0]),
+            "cols": int(df.shape[1]), "table_name": table_name, "created_at": created_at
+        })
+
+    return {
+        "dataset_id": ds_id,
+        "name": name,
+        "rows": int(df.shape[0]),
+        "cols": int(df.shape[1]),
+        "columns": list(map(str, df.columns)),
+        "table_name": table_name,
+        "created_at": created_at,
+    }
+
 @app.post("/v1/datasets")
 def create_dataset():
     if "file" not in request.files:
@@ -224,12 +251,7 @@ def create_dataset():
     raw = f.read()
 
     try:
-        if name.lower().endswith(".csv"):
-            df = _read_csv(raw, name)
-            ftype = "csv"
-        else:
-            df = pd.read_excel(io.BytesIO(raw))
-            ftype = "excel"
+        df, ftype = _ingest_dataframe(raw, name)
     except Exception as e:
         return _json_error(f"failed to read file: {e}", 400, "ingestion")
 
@@ -237,33 +259,148 @@ def create_dataset():
     table_name = _safe_table_name(ds_id, name)
     created_at = _now_iso()
 
-    metadata = {
-        "name": name, "bytes": raw, "type": ftype,
-        "table_name": table_name, "created_at": created_at
-    }
     try:
-        _persist_dataset(ds_id, raw, {key: value for key, value in metadata.items() if key != "bytes"})
+        _persist_dataset(ds_id, raw, {"name": name, "type": ftype, "table_name": table_name, "created_at": created_at})
     except Exception as e:
         return _json_error(f"failed to persist dataset: {e}", 502, "storage_error")
 
-    DATASETS[ds_id] = df
-    META[ds_id] = metadata
+    result = _register_dataset(ds_id, name, df, ftype, raw, client_id, created_at)
+    return jsonify(result), 201
 
-    if client_id:
-        RECENT_UPLOADS[client_id].appendleft({
-            "dataset_id": ds_id, "name": name, "rows": int(df.shape[0]),
-            "cols": int(df.shape[1]), "table_name": table_name, "created_at": created_at
-        })
+
+# ---- large-file upload: browser uploads directly to Vercel Blob, bypassing
+# the ~4.5MB serverless function request body limit ----
+BLOB_API_BASE = "https://vercel.com/api/blob"
+BLOB_API_VERSION = "12"
+MAX_DIRECT_UPLOAD_BYTES = 500 * 1024 * 1024  # 500MB
+UPLOAD_TOKEN_TTL_MS = 15 * 60 * 1000  # 15 minutes
+
+def _blob_store_id() -> str:
+    # Read-write tokens are shaped vercel_blob_rw_<storeId>_<secret>
+    parts = _blob_token().split("_")
+    return parts[3] if len(parts) > 3 else ""
+
+def _blob_control_headers(extra: Dict[str, str] = None) -> Dict[str, str]:
+    store_id = _blob_store_id()
+    headers = {
+        "x-api-blob-request-id": f"{store_id}:{int(time.time() * 1000)}:{secrets.token_hex(8)}",
+        "x-vercel-blob-store-id": store_id,
+        "x-api-blob-request-attempt": "0",
+        "x-api-version": BLOB_API_VERSION,
+        "authorization": f"Bearer {_blob_token()}",
+    }
+    if extra:
+        headers.update(extra)
+    return headers
+
+def _issue_signed_token(pathname: str, operations: List[str], valid_until_ms: int,
+                         maximum_size_in_bytes: int = None) -> Dict[str, Any]:
+    body: Dict[str, Any] = {"pathname": pathname, "operations": operations, "validUntil": valid_until_ms}
+    if maximum_size_in_bytes is not None:
+        body["maximumSizeInBytes"] = maximum_size_in_bytes
+    response = httpx.post(
+        f"{BLOB_API_BASE}/signed-token",
+        json=body,
+        headers=_blob_control_headers({"content-type": "application/json"}),
+        timeout=30.0,
+    )
+    response.raise_for_status()
+    return response.json()  # {delegationToken, clientSigningToken, validUntil}
+
+def _b64url_encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+def _presign_put_url(delegation_token: str, client_signing_token: str, pathname: str) -> str:
+    """
+    Ports @vercel/blob's presign() for the `put` operation: builds the same
+    canonical string and HMAC-SHA256 signature the Blob API verifies, so the
+    browser can PUT straight to Blob storage using a URL our server signed
+    without ever seeing the file bytes. We always request the full delegation
+    lifetime (no custom validUntil) and a fixed pathname (addRandomSuffix off),
+    so the entries here are the fixed set presign() would produce for that case.
+    """
+    entries = [("vercel-blob-add-random-suffix", "false")]
+
+    canonical_lines = ["operation=put", f"pathname={pathname}"] + [f"{k}={v}" for k, v in entries]
+    canonical_lines.sort(key=lambda s: s.encode("utf-8"))
+    canonical = "\n".join(canonical_lines)
+
+    signature = _b64url_encode(
+        hmac.new(client_signing_token.encode("utf-8"), canonical.encode("utf-8"), hashlib.sha256).digest()
+    )
+
+    query = {"pathname": pathname}
+    query.update(entries)
+    query["vercel-blob-delegation"] = delegation_token
+    query["vercel-blob-signature"] = signature
+    return f"{BLOB_API_BASE}/?{urlencode(query)}"
+
+@app.post("/v1/datasets/upload-token")
+def create_upload_token():
+    if not _blob_token():
+        return _json_error("BLOB_READ_WRITE_TOKEN is not configured", 500, "storage_error")
+
+    ds_id = uuid.uuid4().hex
+    pathname = f"datasets/{ds_id}/source"
+    valid_until = int(time.time() * 1000) + UPLOAD_TOKEN_TTL_MS
+
+    try:
+        issued = _issue_signed_token(pathname, ["put"], valid_until, MAX_DIRECT_UPLOAD_BYTES)
+        upload_url = _presign_put_url(issued["delegationToken"], issued["clientSigningToken"], pathname)
+    except Exception as e:
+        return _json_error(f"failed to issue upload token: {e}", 502, "storage_error")
 
     return jsonify({
         "dataset_id": ds_id,
-        "name": name,
-        "rows": int(df.shape[0]),
-        "cols": int(df.shape[1]),
-        "columns": list(map(str, df.columns)),
-        "table_name": table_name,
-        "created_at": created_at,
-    }), 201
+        "upload_url": upload_url,
+        "store_id": _blob_store_id(),
+        "api_version": BLOB_API_VERSION,
+        "access": "public",
+        "max_size_bytes": MAX_DIRECT_UPLOAD_BYTES,
+        "expires_at": valid_until,
+    }), 200
+
+@app.post("/v1/datasets/finalize")
+def finalize_dataset():
+    """
+    Second step of the direct-to-Blob upload flow: the browser has already PUT
+    the file straight to Blob storage using the presigned URL from
+    /v1/datasets/upload-token, so this just reads it back, parses it, and
+    registers it exactly like /v1/datasets does for small direct-body uploads.
+    """
+    body = request.get_json(force=True, silent=True) or {}
+    ds_id = (body.get("dataset_id") or "").strip()
+    name = (body.get("name") or "data.csv").strip()
+    client_id = body.get("client_id") or request.headers.get("X-Client-Id") or ""
+    if not ds_id:
+        return _json_error("dataset_id is required", 400, "validation")
+
+    try:
+        raw = _blob_get(f"datasets/{ds_id}/source")
+    except _BlobNotFound:
+        return _json_error("uploaded file not found; the upload may have failed or expired", 404, "not_found")
+    except Exception as e:
+        return _json_error(f"failed to read uploaded file: {e}", 502, "storage_error")
+
+    try:
+        df, ftype = _ingest_dataframe(raw, name)
+    except Exception as e:
+        return _json_error(f"failed to read file: {e}", 400, "ingestion")
+
+    created_at = _now_iso()
+    table_name = _safe_table_name(ds_id, name)
+    try:
+        _blob_put(
+            f"datasets/{ds_id}/metadata.json",
+            json.dumps({"name": name, "type": ftype, "table_name": table_name, "created_at": created_at}).encode("utf-8"),
+            "application/json",
+        )
+    except Exception as e:
+        return _json_error(f"failed to persist dataset metadata: {e}", 502, "storage_error")
+
+    result = _register_dataset(ds_id, name, df, ftype, raw, client_id, created_at)
+    return jsonify(result), 201
+
 
 @app.get("/v1/datasets/<ds_id>/preview")
 def preview_dataset(ds_id: str):
