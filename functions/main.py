@@ -1,4 +1,4 @@
-import os, sys, uuid, json, io, logging, csv, time, secrets, hmac, hashlib, base64
+import os, sys, uuid, json, io, logging, csv, time, secrets, hmac, hashlib, base64, math
 from typing import Any, Dict, List
 from collections import defaultdict, deque
 from datetime import datetime, timezone
@@ -163,6 +163,20 @@ def _read_csv(raw: bytes, name: str) -> pd.DataFrame:
 def _json_error(message, code=500, kind="internal", detail=None):
     logging.error("%s | kind=%s | detail=%s", message, kind, detail)
     return jsonify({"error": message, "kind": kind, "detail": detail}), code
+
+def _json_safe(obj):
+    """
+    Python's json module happily emits literal NaN/Infinity for those float
+    values, which isn't valid JSON and breaks JSON.parse() in the browser.
+    Recursively swap them for null before jsonify() sees them.
+    """
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_json_safe(v) for v in obj]
+    return obj
 
 def _safe_table_name(ds_id: str, filename: str) -> str:
     base = os.path.splitext(os.path.basename(filename or "data"))[0]
@@ -408,7 +422,7 @@ def preview_dataset(ds_id: str):
     df, _ = _get_dataset(ds_id)
     if df is None:
         return _json_error("dataset not found", 404, "not_found")
-    prev = df.head(n).to_dict(orient="records")
+    prev = _json_safe(df.head(n).to_dict(orient="records"))
     return jsonify({"rows": prev, "columns": list(map(str, df.columns))})
 
 @app.get("/v1/datasets/recent")
@@ -688,7 +702,7 @@ def qa_answer():
     return jsonify({
         "sql": sql,
         "result": {
-            "rows": result_df.to_dict(orient="records"),
+            "rows": _json_safe(result_df.to_dict(orient="records")),
             "columns": list(map(str, result_df.columns)),
         },
         "chart": fig,
@@ -849,7 +863,7 @@ def auto_insights():
                 "question": q,
                 "sql": sql,
                 "summary": summary,
-                "result_preview": res_df.head(50).to_dict(orient="records"),
+                "result_preview": _json_safe(res_df.head(50).to_dict(orient="records")),
             })
 
         except Exception as e:
